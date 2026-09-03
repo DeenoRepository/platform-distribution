@@ -1,0 +1,58 @@
+﻿version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: ems-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ems_admin
+      POSTGRES_PASSWORD: ems_secure_password
+      POSTGRES_DB: ems_platform
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/postgres/01-init-schemas.sql:/docker-entrypoint-initdb.d/01-init-schemas.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ems_admin -d ems_platform"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: ems-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
+  app-shell:
+    image: node:20-alpine
+    container_name: ems-shell
+    restart: unless-stopped
+    working_dir: /app
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://ems_admin:ems_secure_password@postgres:5432/ems_platform
+      REDIS_URL: redis://redis:6379
+      PORT: 3000
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+
+  nginx:
+    image: nginx:alpine
+    container_name: ems-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - app-shell
+
+volumes:
+  pgdata:
