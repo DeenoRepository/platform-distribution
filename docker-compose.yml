@@ -5,27 +5,63 @@ services:
     image: postgres:16-alpine
     container_name: ems-postgres
     restart: unless-stopped
+    command: >
+      postgres
+      -c max_connections=100
+      -c shared_buffers=256MB
+      -c effective_cache_size=768MB
+      -c work_mem=8MB
+      -c maintenance_work_mem=64MB
+      -c checkpoint_completion_target=0.9
+      -c wal_buffers=16MB
+      -c default_statistics_target=100
+      -c random_page_cost=1.1
     environment:
-      POSTGRES_USER: ems_admin
-      POSTGRES_PASSWORD: ems_secure_password
-      POSTGRES_DB: ems_platform
+      POSTGRES_USER: ${POSTGRES_USER:-ems_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ems_secure_password}
+      POSTGRES_DB: ${POSTGRES_DB:-ems_platform}
     ports:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./docker/postgres/01-init-schemas.sql:/docker-entrypoint-initdb.d/01-init-schemas.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ems_admin -d ems_platform"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ems_admin} -d ${POSTGRES_DB:-ems_platform}"]
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1024M
+        reservations:
+          cpus: '0.5'
+          memory: 512M
 
   redis:
     image: redis:7-alpine
     container_name: ems-redis
     restart: unless-stopped
+    command: redis-server --appendonly yes --appendfsync everysec --maxmemory 256mb --maxmemory-policy noeviction
     ports:
       - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.2'
+          memory: 128M
 
   app-shell:
     image: node:20-alpine
@@ -34,14 +70,30 @@ services:
     working_dir: /app
     environment:
       NODE_ENV: production
-      DATABASE_URL: postgresql://ems_admin:ems_secure_password@postgres:5432/ems_platform
+      DATABASE_URL: postgresql://${POSTGRES_USER:-ems_admin}:${POSTGRES_PASSWORD:-ems_secure_password}@postgres:5432/${POSTGRES_DB:-ems_platform}
       REDIS_URL: redis://redis:6379
       PORT: 3000
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     ports:
       - "3000:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3000/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1024M
+        reservations:
+          cpus: '0.5'
+          memory: 256M
 
   nginx:
     image: nginx:alpine
@@ -53,6 +105,20 @@ services:
       - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
     depends_on:
       - app-shell
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 256M
+        reservations:
+          cpus: '0.2'
+          memory: 64M
 
 volumes:
   pgdata:
+  redisdata:
